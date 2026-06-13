@@ -196,7 +196,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, is_truthy_value, model_forces_max_completion_tokens
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, base_url_is_copilot_endpoint, is_truthy_value, model_forces_max_completion_tokens
 
 
 
@@ -1074,7 +1074,7 @@ class AIAgent:
             hostname = getattr(self, "_base_url_hostname", "") or base_url_hostname(
                 getattr(self, "_base_url_lower", "")
             )
-        return hostname == "api.githubcopilot.com"
+        return base_url_is_copilot_endpoint(getattr(self, "_base_url_lower", "") or getattr(self, "_base_url", ""))
 
     def _resolved_api_call_timeout(self) -> float:
         """Resolve the effective per-call request timeout in seconds.
@@ -3589,7 +3589,7 @@ class AIAgent:
         # unaffected (they don't go through here).
         request_kwargs["max_retries"] = 0
         if (
-            base_url_host_matches(str(request_kwargs.get("base_url", "")), "api.githubcopilot.com")
+            base_url_is_copilot_endpoint(str(request_kwargs.get("base_url", "")))
             and self._api_kwargs_have_image_parts(api_kwargs or {})
         ):
             request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
@@ -3851,7 +3851,7 @@ class AIAgent:
             self._client_kwargs["default_headers"] = build_nvidia_nim_headers(base_url)
         elif base_url_host_matches(base_url, "api.routermint.com"):
             self._client_kwargs["default_headers"] = _routermint_headers()
-        elif base_url_host_matches(base_url, "api.githubcopilot.com"):
+        elif base_url_is_copilot_endpoint(base_url):
             from hermes_cli.models import copilot_default_headers
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
@@ -4728,7 +4728,7 @@ class AIAgent:
             return True
         if (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
-            or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
+            or base_url_is_copilot_endpoint(self._base_url_lower)
         ):
             try:
                 from hermes_cli.models import github_model_reasoning_efforts
