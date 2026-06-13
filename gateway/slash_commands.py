@@ -3086,6 +3086,101 @@ class GatewaySlashCommandsMixin:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
 
+    async def _handle_prefix_command(self, event: MessageEvent) -> str:
+        """Handle /prefix command — toggle the response prefix.
+
+        Usage:
+            /prefix           → toggle on/off
+            /prefix on        → enable globally
+            /prefix off       → disable globally
+            /prefix status    → show current state + template
+
+        The prefix is saved to ``messages.response_prefix`` (global).
+        Per-platform overrides under ``messages.platforms.<platform>.response_prefix``
+        are respected but not modified here — edit config.yaml directly for
+        per-platform control.
+        """
+        from gateway.run import _hermes_home, _load_gateway_config, _platform_config_key
+        from gateway.response_prefix import resolve_prefix_config, interpolate_prefix_template
+
+        config_path = _hermes_home / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
+
+        # --- parse argument -------------------------------------------------
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        # --- load config ----------------------------------------------------
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return f"⚠️ Could not read config.yaml: {e}"
+
+        effective = resolve_prefix_config(user_config, platform_key)
+
+        if arg in ("status", "?"):
+            state = "ON" if effective["enabled"] else "OFF"
+            template = effective.get("template") or "(empty — disabled)"
+            return (
+                f"🏷️ Response prefix: **{state}**\n"
+                f"Template: `{template}`\n"
+                f"Platform: `{platform_key}`\n"
+                f"Vars: `{{model}}`, `{{modelFull}}`, `{{provider}}`, `{{thinking}}`"
+            )
+
+        if arg in ("on", "enable", "true", "1"):
+            # Use a sensible default template if none is set
+            new_template = effective.get("template") or "[{provider}/{model}] "
+            new_enabled = True
+        elif arg in ("off", "disable", "false", "0"):
+            new_template = ""
+            new_enabled = False
+        elif arg == "":
+            # Toggle: if currently disabled, enable with default template
+            if effective["enabled"] and effective.get("template"):
+                new_template = ""
+                new_enabled = False
+            else:
+                new_template = effective.get("template") or "[{provider}/{model}] "
+                new_enabled = True
+        else:
+            return "Usage: `/prefix [on|off|status]`"
+
+        # --- write global config ---------------------------------------------
+        try:
+            if not isinstance(user_config.get("messages"), dict):
+                user_config["messages"] = {}
+            msgs = user_config["messages"]
+            if new_enabled:
+                msgs["response_prefix"] = new_template
+            else:
+                msgs["response_prefix"] = ""
+            atomic_yaml_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("Failed to save messages.response_prefix: %s", e)
+            return f"⚠️ Could not save config.yaml: {e}"
+
+        state = "ON" if new_enabled else "OFF"
+        example = ""
+        if new_enabled and new_template:
+            # Show a preview with placeholder values
+            preview = interpolate_prefix_template(
+                new_template,
+                model="claude-opus-4.6",
+                provider="github-copilot",
+                thinking="high",
+            )
+            if preview:
+                example = f"\nExample: `{preview}`"
+        return f"✅ Response prefix: **{state}**{example}\n_(saved globally — takes effect on next message)_"
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 

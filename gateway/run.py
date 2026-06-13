@@ -9556,6 +9556,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return await self._handle_verbose_command(event)
                 if _cmd_def_inner.name == "footer":
                     return await self._handle_footer_command(event)
+                if _cmd_def_inner.name == "prefix":
+                    return await self._handle_prefix_command(event)
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
@@ -9907,6 +9909,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "footer":
             return await self._handle_footer_command(event)
+
+        if canonical == "prefix":
+            return await self._handle_prefix_command(event)
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
@@ -11936,6 +11941,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
                     else:
                         response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            # Response prefix — prepended to the FIRST message of the turn.
+            # Off by default (messages.response_prefix="").  When streaming
+            # already delivered the body, we cannot retroactively prepend.
+            _prefix_line = ""
+            if not agent_result.get("already_sent"):
+                try:
+                    from gateway.response_prefix import build_prefix_line as _bpl
+                    _prefix_line = _bpl(
+                        user_config=_load_gateway_config(),
+                        platform_key=_platform_config_key(source.platform),
+                        model=agent_result.get("model"),
+                        provider=agent_result.get("provider"),
+                        thinking=agent_result.get("thinking") or agent_result.get("thinking_level"),
+                    )
+                except Exception as _prefix_err:
+                    logger.debug("response_prefix build failed: %s", _prefix_err)
+                    _prefix_line = ""
+                if _prefix_line and response:
+                    response = f"{_prefix_line} {response}"
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
