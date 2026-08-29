@@ -127,8 +127,13 @@ def _get_direct_firecrawl_config() -> Optional[tuple]:
     api_key = (get_env_value("FIRECRAWL_API_KEY") or "").strip()
     api_url = (get_env_value("FIRECRAWL_API_URL") or "").strip().rstrip("/")
 
-    if not api_key and not api_url:
-        return None
+    # Keyless mode: Firecrawl went keyless 2026-06-16 (1000 free credits/mo/IP).
+    # When neither key nor URL is set, opt into cloud keyless via HTTP shim
+    # (the official SDK enforces a non-empty api_key even against the public
+    # cloud endpoint, so we bypass it).
+    keyless = not api_key and not api_url
+    if keyless:
+        return "keyless", ("keyless", "https://api.firecrawl.dev", None)
 
     kwargs: Dict[str, str] = {}
     if api_key:
@@ -209,6 +214,37 @@ def _raise_web_backend_configuration_error() -> None:
     raise ValueError(message)
 
 
+class _KeylessFirecrawlHTTPClient:
+    """Minimal HTTP client for Firecrawl's keyless mode (no SDK, no key).
+
+    Firecrawl went keyless 2026-06-16 (1000 free credits/month/IP for
+    search + scrape + extract). The official SDK still requires a non-empty
+    api_key, so we bypass it with a small requests-based shim that returns
+    the raw JSON dict; downstream extractors already handle that shape.
+    """
+
+    def __init__(self, base_url: str = "https://api.firecrawl.dev"):
+        self.base_url = base_url.rstrip("/")
+
+    def _post(self, path: str, payload: dict, timeout: float = 30.0) -> dict:
+        import requests  # SDK is heavy; keep this import local
+        r = requests.post(
+            f"{self.base_url}{path}",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def search(self, query: str, limit: int = 5, **_ignored) -> dict:
+        return self._post("/v2/search", {"query": query, "limit": limit})
+
+    def scrape(self, url: str, formats=None, **_ignored) -> dict:
+        payload = {"url": url, "formats": formats or ["markdown"]}
+        return self._post("/v2/scrape", payload, timeout=60.0)
+
+
 def _get_firecrawl_client() -> Any:
     """Get or create the cached Firecrawl client.
 
@@ -232,6 +268,18 @@ def _get_firecrawl_client() -> Any:
     direct_config = _get_direct_firecrawl_config()
     if direct_config is not None and not _wt.prefers_gateway("web"):
         kwargs, client_config = direct_config
+
+        # Keyless HTTP shim path (no SDK, no key).
+        if kwargs == "keyless":
+            cached = getattr(_wt, "_firecrawl_client", None)
+            cached_config = getattr(_wt, "_firecrawl_client_config", None)
+            if cached is not None and cached_config == client_config:
+                return cached
+            _wt._firecrawl_client = _KeylessFirecrawlHTTPClient(
+                base_url=client_config[1]
+            )
+            _wt._firecrawl_client_config = client_config
+            return _wt._firecrawl_client
     else:
         managed_gateway = _wt.resolve_managed_tool_gateway(
             "firecrawl", token_reader=_wt._read_nous_access_token
