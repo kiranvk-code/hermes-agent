@@ -273,23 +273,36 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    # Static fallback only — the live catalog (GET /models) wins when reachable.
+    # Mirrors the 25 picker-enabled chat models on api.business.githubcopilot.com
+    # as of 2026-09-03; claude-*-4.6/4.5 and gemini-*-preview/2.5-pro were retired
+    # by GitHub and 400 on every endpoint.
     "copilot": [
+        "claude-sonnet-5",
+        "claude-opus-5",
+        "claude-opus-4.8",
+        "claude-opus-4.8-fast",
+        "claude-opus-4.7",
+        "claude-fable-5.1",
+        "claude-fable-5",
+        "claude-haiku-4.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
-        "gpt-5-mini",
         "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-4.1",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "claude-sonnet-4.6",
-        "claude-sonnet-4",
-        "claude-sonnet-4.5",
-        "claude-haiku-4.5",
-        "gemini-3.1-pro-preview",
-        "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
-        "gemini-2.5-pro",
+        "gpt-5-mini",
+        "gemini-3.7-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "grok-4.6",
+        "grok-4.5",
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "mai-code-1.1-flash",
+        "mai-code-1-flash-picker",
     ],
     "gemini": [
         "gemini-3.1-pro-preview",
@@ -3225,6 +3238,14 @@ _COPILOT_MODEL_ALIASES = {
     "claude-sonnet-4-0": "claude-sonnet-4",
     "claude-sonnet-4-5": "claude-sonnet-4.5",
     "claude-haiku-4-5": "claude-haiku-4.5",
+    "claude-opus-4-7": "claude-opus-4.7",
+    "claude-opus-4-8": "claude-opus-4.8",
+    "claude-opus-4-8-fast": "claude-opus-4.8-fast",
+    "claude-fable-5-1": "claude-fable-5.1",
+    "anthropic/claude-opus-4-7": "claude-opus-4.7",
+    "anthropic/claude-opus-4-8": "claude-opus-4.8",
+    "anthropic/claude-opus-4-8-fast": "claude-opus-4.8-fast",
+    "anthropic/claude-fable-5-1": "claude-fable-5.1",
     "anthropic/claude-opus-4-6": "claude-opus-4.6",
     "anthropic/claude-sonnet-4-6": "claude-sonnet-4.6",
     "anthropic/claude-sonnet-4-0": "claude-sonnet-4",
@@ -3353,6 +3374,10 @@ def copilot_model_api_mode(
             # For non-GPT-5 models, check if they only support messages API
             if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
                 return "anthropic_messages"
+            # Responses-only non-GPT models (grok-4.x, mai-code-*): Copilot
+            # rejects /chat/completions with 400 unsupported_api_for_model.
+            if "/responses" in supported_endpoints and "/chat/completions" not in supported_endpoints:
+                return "codex_responses"
 
     return "chat_completions"
 
