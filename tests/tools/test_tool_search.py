@@ -1018,3 +1018,56 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+class TestAlwaysVisible:
+    """``tools.tool_search.always_visible`` pins tools out of the deferral set (local carry).
+
+    Regression guard for the hands-free reader's ``send_diagram`` MCP tool: when deferred, the
+    model must nest a whole SVG as a JSON string inside the ``tool_call`` bridge's JSON — one bad
+    escape and the sanitizer replaces the arguments with ``{}`` and the diagram silently never
+    renders (2026-09-04). Pinned tools take the direct, single-encoding path.
+    """
+
+    def test_exact_and_glob_pins(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "always_visible": ["mcp__xsearch__send_diagram", "mcp__gbrain__put_*", 42, ""],
+        })
+        assert cfg.is_pinned("mcp__xsearch__send_diagram")
+        assert cfg.is_pinned("mcp__gbrain__put_page")
+        assert not cfg.is_pinned("mcp__gbrain__get_page")
+        assert not cfg.is_pinned("mcp__xsearch__x_search")
+        assert not cfg.is_pinned("")
+
+    def test_string_form_and_garbage(self):
+        from tools.tool_search import ToolSearchConfig
+        assert ToolSearchConfig.from_raw({"always_visible": "mcp__a__b"}).is_pinned("mcp__a__b")
+        assert ToolSearchConfig.from_raw({"always_visible": {"not": "a list"}}).always_visible == frozenset()
+        assert not ToolSearchConfig.from_raw({}).is_pinned("anything")
+
+    def test_pinned_tool_stays_visible_when_deferral_activates(self, monkeypatch):
+        from tools import tool_search as ts
+        cfg = ts.ToolSearchConfig.from_raw({
+            "enabled": "on",
+            "always_visible": ["mcp__xsearch__send_diagram"],
+        })
+        monkeypatch.setattr(
+            ts, "is_deferrable_tool_name",
+            lambda n, d=None, c=None: n.startswith("mcp__") and not (c is not None and c.is_pinned(n)),
+        )
+        defs = [
+            _td("terminal", "core"),
+            _td("mcp__xsearch__send_diagram", "draw", {"svg": {"type": "string"}}),
+            _td("mcp__xsearch__x_search", "search"),
+            _td("mcp__gbrain__get_page", "page"),
+        ]
+        res = ts.assemble_tool_defs(defs, context_length=100_000, config=cfg)
+        names = [d["function"]["name"] for d in res.tool_defs]
+        assert res.activated
+        assert "mcp__xsearch__send_diagram" in names
+        assert "terminal" in names
+        assert "mcp__xsearch__x_search" not in names
+        assert res.deferred_count == 2
+        assert all(b in names for b in ts.BRIDGE_TOOL_NAMES)

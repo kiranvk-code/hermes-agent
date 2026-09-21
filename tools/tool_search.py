@@ -49,10 +49,27 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    # Tool names (exact, or a ``prefix*`` glob) that stay in the model-facing array even when
+    # deferral is active. For tools whose arguments are large structured blobs (an SVG, a document
+    # body) the bridge's nested JSON encoding is fragile — one bad escape and the sanitizer drops
+    # the call. Local carry (kiranvk): ``tools.tool_search.always_visible``.
+    always_visible: frozenset = frozenset()
 
     @property
     def effective_defer_tools(self) -> frozenset:
         return _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
+
+    def is_pinned(self, name: str) -> bool:
+        """True when ``name`` matches an ``always_visible`` entry (exact or ``prefix*``)."""
+        if not self.always_visible or not name:
+            return False
+        for pat in self.always_visible:
+            if pat.endswith("*"):
+                if name.startswith(pat[:-1]):
+                    return True
+            elif name == pat:
+                return True
+        return False
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -70,7 +87,14 @@ class ToolSearchConfig:
                 "(e.g. [todo_list, computer_use]; [] keeps every tool eager) - "
                 "using the curated default set.", defer_raw)
             defer_raw = None
+        av_raw = raw.get("always_visible")
+        if isinstance(av_raw, str):
+            av_raw = [av_raw]
+        always_visible = frozenset(
+            str(x).strip() for x in (av_raw or []) if isinstance(x, (str, int)) and str(x).strip()
+        ) if isinstance(av_raw, (list, tuple, set, frozenset)) else frozenset()
         return cls(
+            always_visible=always_visible,
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
             search_default_limit=_clamped_int(
@@ -144,11 +168,14 @@ _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project"})
 _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
 
 
-def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
+def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None,
+                            config: Optional["ToolSearchConfig"] = None) -> bool:
     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
-    plugin tool). Bridge names never defer."""
+    plugin tool). Bridge names never defer; neither do ``always_visible`` pins from ``config``."""
     if name in BRIDGE_TOOL_NAMES:
+        return False
+    if config is not None and config.is_pinned(name):
         return False
     if defer_tools is not None and name in defer_tools:
         return True
@@ -165,20 +192,22 @@ def _tool_def_names(tool_defs: Iterable[Dict[str, Any]]) -> Iterable[str]:
 
 
 def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozenset] = None,
+                   config: Optional[ToolSearchConfig] = None,
                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
-    after classification)."""
+    after classification). ``always_visible`` pins from ``config`` always land in ``visible``."""
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td, name in zip(tool_defs, _tool_def_names(tool_defs)):
         if name not in BRIDGE_TOOL_NAMES:
-            (deferrable if is_deferrable_tool_name(name, defer_tools) else visible).append(td)
+            (deferrable if is_deferrable_tool_name(name, defer_tools, config) else visible).append(td)
     return visible, deferrable
 
 
 def _deferrable_in(tool_defs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Deferrable subset of pre-assembly ``tool_defs`` under the read-only user config."""
-    return classify_tools(tool_defs, load_config_readonly().effective_defer_tools)[1]
+    _cfg = load_config_readonly()
+    return classify_tools(tool_defs, _cfg.effective_defer_tools, _cfg)[1]
 
 
 def estimate_tokens_from_schemas(tool_defs: Iterable[Dict[str, Any]]) -> int:
@@ -348,7 +377,7 @@ def assemble_tool_defs(tool_defs: List[Dict[str, Any]], *, context_length: Optio
     config = config or load_config()
     incoming = [td for td, name in zip(tool_defs, _tool_def_names(tool_defs))
                 if name not in BRIDGE_TOOL_NAMES]
-    visible, deferrable = classify_tools(incoming, config.effective_defer_tools)
+    visible, deferrable = classify_tools(incoming, config.effective_defer_tools, config)
     connections_granted = connections_in_scope(incoming)
     if not deferrable:
         if should_activate(config, 0, context_length, connections_granted=connections_granted):
