@@ -1641,6 +1641,23 @@ class GatewayTurnMixin:
             logger.debug("runtime_footer build failed: %s", _footer_err)
             return ""
 
+    def _hmwa_response_prefix_line(self, agent_result, source):
+        """Model/provider prefix for the FIRST message of the turn (local carry, kiranvk);
+        off by default (messages.response_prefix="")."""
+        from gateway.run import _load_gateway_config, _platform_config_key
+        try:
+            from gateway.response_prefix import build_prefix_line as _bpl
+            return _bpl(
+                user_config=_load_gateway_config(),
+                platform_key=_platform_config_key(source.platform),
+                model=agent_result.get("model"),
+                provider=agent_result.get("provider"),
+                thinking=agent_result.get("thinking") or agent_result.get("thinking_level"),
+            )
+        except Exception as _prefix_err:
+            logger.debug("response_prefix build failed: %s", _prefix_err)
+            return ""
+
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):
         """agent:end hook, process-watcher scheduling, and watch-notification drain."""
         await self.hooks.emit("agent:end", {
@@ -2211,6 +2228,12 @@ class GatewayTurnMixin:
                 persist_user_display_kind=prepared.persist_user_display_kind,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
+            # Response prefix (local carry, kiranvk): "[provider/model] " on the FIRST message of the
+            # turn; off unless messages.response_prefix is set. Streaming already delivered the body
+            # (already_sent) → nothing to prepend.
+            _prefix_line = self._hmwa_response_prefix_line(agent_result, source)
+            if _prefix_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+                response = f"{_prefix_line} {response}"
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:

@@ -1052,6 +1052,58 @@ class GatewaySlashCommandsMixin(
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=_state(new_state), example=example)
 
+    async def _handle_prefix_command(self, event: MessageEvent) -> str:
+        """Handle /prefix — toggle the "[provider/model]" response prefix (local carry, kiranvk).
+
+        Usage: ``/prefix`` toggles, ``/prefix on|off`` sets, ``/prefix status`` shows the effective
+        state. Saved to ``messages.response_prefix`` (global); per-platform overrides under
+        ``messages.platforms.<platform>.response_prefix`` are honoured but not edited here."""
+        from gateway.run import _load_gateway_config
+        from gateway.response_prefix import interpolate_prefix_template, resolve_prefix_config
+        config_path, platform_key = self._display_config_target(event)
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        except Exception:
+            arg = ""
+        try:
+            user_config: dict = _load_gateway_config()
+        except Exception as e:
+            return t("gateway.config_read_failed", error=e)
+        effective = resolve_prefix_config(user_config, platform_key)
+        default_template = "[{provider}/{model}] "
+        if arg in {"status", "?"}:
+            state = "ON" if effective["enabled"] else "OFF"
+            template = effective.get("template") or "(empty — disabled)"
+            return (f"🏷️ Response prefix: **{state}**\nTemplate: `{template}`\nPlatform: `{platform_key}`\n"
+                    "Vars: `{model}`, `{modelFull}`, `{provider}`, `{thinking}`")
+        if arg in {"on", "enable", "true", "1"}:
+            new_template = effective.get("template") or default_template
+        elif arg in {"off", "disable", "false", "0"}:
+            new_template = ""
+        elif arg == "":
+            new_template = "" if (effective["enabled"] and effective.get("template")) else (
+                effective.get("template") or default_template)
+        else:
+            return "Usage: `/prefix [on|off|status]`"
+        try:
+            _nested_dict(user_config, "messages")["response_prefix"] = new_template
+            atomic_config_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("Failed to save messages.response_prefix: %s", e)
+            return t("gateway.config_save_failed", error=e)
+        example = ""
+        if new_template:
+            preview = interpolate_prefix_template(
+                new_template, model="claude-sonnet-5", provider="claude-subscription", thinking="high")
+            if preview:
+                example = f"\nExample: `{preview}`"
+        state = "ON" if new_template else "OFF"
+        return f"✅ Response prefix: **{state}**{example}\n_(saved — takes effect on the next message)_"
+
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent. Reloading
         invalidates the provider prompt cache (tool schemas live in the system prompt), so it routes
