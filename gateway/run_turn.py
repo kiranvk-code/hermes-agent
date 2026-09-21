@@ -295,6 +295,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 reply_expected=event.reply_expected,
             )
             response = self._usage_window_chat_wording(agent_result, self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence))
+            # Response prefix (local carry, kiranvk): "[provider/model] " on the FIRST message of the
+            # turn; off unless messages.response_prefix is set. Streaming already delivered the body
+            # (already_sent) -> nothing to prepend.
+            _prefix_line = self._hmwa_response_prefix_line(agent_result, source)
+            if _prefix_line and response and not agent_result.get("already_sent") and not _intentional_silence:
+                response = f"{_prefix_line} {response}"
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
             # Streaming already delivered the body: the footer goes out as a trailing send instead.
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
