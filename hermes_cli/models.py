@@ -1786,10 +1786,24 @@ def _credential_fingerprint(provider: str) -> str:
         except Exception:
             pass
 
+    # Key on this provider's own credentials in the shared auth.json, never the file mtime:
+    # any write to it — an unrelated provider's, a pool counter bump, or a same-content rewrite —
+    # bumps the mtime and would hide every live-only model from the non-blocking picker
+    # (upstream #139795 / PR #139831).
+    from hermes_cli.models_credential_identity import _auth_store_provider_identity
+    identity = _auth_store_provider_identity(provider)
+    if identity is not None:
+        parts.append(f"auth_identity={identity}")
+    else:  # unreadable store: degrade to the mtime (a spurious cache miss, never a stale hit)
+        try:
+            from hermes_constants import get_hermes_home
+            for rel in ("auth.json",):
+                _mtime_part(rel, get_hermes_home() / rel)
+        except Exception:
+            pass
     try:
         from hermes_constants import get_hermes_home
-        for rel in ("auth.json", "credentials.json"):
-            _mtime_part(rel, get_hermes_home() / rel)
+        _mtime_part("credentials.json", get_hermes_home() / "credentials.json")
     except Exception:
         pass
     for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",

@@ -202,3 +202,123 @@ class TestCorruptCacheRowDegradation:
             out = mod.cached_provider_model_ids("openrouter")
         assert out == ["live-model"]
         live.assert_called_once()
+
+
+class TestAuthStoreIdentityFingerprint:
+    """Regression for upstream #139795 (PR #139831): the shared auth.json is rewritten by any
+    provider's pool bookkeeping (request_count / last_status) and by same-content rewrites, so
+    keying the catalog row on the file mtime dropped every live-only model from the non-blocking
+    picker until the SWR refresh landed."""
+
+    @staticmethod
+    def _write_store(path, store, mtime_ns):
+        import json, os
+        path.write_text(json.dumps(store), encoding="utf-8")
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+
+    def test_routine_auth_writes_keep_live_only_models_for_same_credentials(
+        self, tmp_path, monkeypatch,
+    ):
+        import hermes_cli.models as mod
+
+        auth_path = tmp_path / "auth.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+
+        def anthropic_store(row_overrides=None, pool_overrides=None):
+            row = {
+                "id": "primary", "access_token": "at1", "refresh_token": "rt1",
+                "expires_at": 100, "last_refresh": 1, "request_count": 3,
+                **(row_overrides or {}),
+            }
+            pool = {"anthropic": [row]}
+            pool.update(pool_overrides or {})
+            return {"version": 1, "providers": {}, "credential_pool": pool}
+
+        self._write_store(auth_path, anthropic_store(), 1_000_000_000)
+        live_models = ["claude-sonnet-5-5", "claude-haiku-5-5"]
+        mod._store_cache_entry(
+            "anthropic", mod._cache_entry(mod._credential_fingerprint("anthropic"), live_models))
+
+        def served():
+            with patch.object(mod, "_spawn_swr_refresh") as spawn:
+                return mod.cached_provider_model_ids("anthropic", non_blocking=True), spawn
+
+        # Same-content rewrite and an unrelated provider's write bump the shared file's mtime
+        # without touching anthropic's credentials: the warmed row must keep being served.
+        self._write_store(auth_path, anthropic_store(), 2_000_000_000)
+        out, spawn = served()
+        assert out == live_models
+        spawn.assert_not_called()
+        self._write_store(auth_path, anthropic_store(pool_overrides={
+            "nous": [{"id": "nous-1", "access_token": "n1", "refresh_token": "nr"}]}), 3_000_000_000)
+        out, spawn = served()
+        assert out == live_models
+        spawn.assert_not_called()
+
+        # anthropic's own routine OAuth rotation / pool bookkeeping rewrites rotating fields only.
+        self._write_store(auth_path, anthropic_store(row_overrides={
+            "access_token": "at2", "expires_at": 999, "last_refresh": 5, "request_count": 9,
+            "last_status": "ok", "last_status_at": 7}), 4_000_000_000)
+        out, spawn = served()
+        assert out == live_models
+        spawn.assert_not_called()
+
+        # A real credential switch (second static-key entry) is a different entitlement: the row
+        # must bust to [] while the daemon refresh warms the next open.
+        self._write_store(auth_path, anthropic_store(pool_overrides={
+            "anthropic": [
+                {"id": "primary", "access_token": "at2", "refresh_token": "rt1", "expires_at": 999},
+                {"id": "second", "api_key": "sk-static-2"}]}), 5_000_000_000)
+        out, spawn = served()
+        assert out == []
+        spawn.assert_called_once_with("anthropic")
+
+    def test_auth_store_provider_identity_stable_across_routine_writes(
+        self, tmp_path, monkeypatch,
+    ):
+        from hermes_cli.models_credential_identity import _auth_store_provider_identity
+
+        auth_path = tmp_path / "auth.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        identity = lambda: _auth_store_provider_identity("anthropic")
+
+        self._write_store(auth_path, {"version": 1, "providers": {}, "credential_pool": {
+            "anthropic": [{"id": "primary", "access_token": "at", "refresh_token": "rt"}]}},
+            1_000_000_000)
+        baseline = identity()
+        assert baseline is not None
+
+        self._write_store(auth_path, {"version": 1, "providers": {"nous": {"access_token": "n", "updated_at": "x"}},
+                     "credential_pool": {
+                         "anthropic": [{"id": "primary", "access_token": "at", "refresh_token": "rt"}],
+                         "nous": [{"id": "nous-1", "access_token": "n"}]}},
+                    2_000_000_000)
+        assert identity() == baseline  # unrelated provider write + file rewrite
+
+        self._write_store(auth_path, {"version": 1, "providers": {}, "credential_pool": {
+            "anthropic": [{"id": "primary", "access_token": "rotated", "refresh_token": "rt",
+                            "expires_at": 9, "last_refresh": 2, "request_count": 4,
+                            "last_status": "ok", "last_status_at": 3}]}},
+            3_000_000_000)
+        assert identity() == baseline  # own rotating fields only
+
+        self._write_store(auth_path, {"version": 1, "providers": {}, "credential_pool": {
+            "anthropic": [{"id": "primary", "api_key": "sk-static"}]}}, 4_000_000_000)
+        assert identity() != baseline  # real credential switch
+
+        self._write_store(auth_path, {"version": 1, "providers": {"anthropic": {"account_id": "acct"}},
+                     "credential_pool": {"anthropic": [{"id": "primary", "api_key": "sk-static"}]}},
+                    5_000_000_000)
+        assert identity() != baseline  # providers.<id> state appears
+
+        # Pool rows are an unordered set: a re-order alone must not invalidate the catalog.
+        rows = [{"id": "a", "api_key": "sk-a"}, {"id": "b", "api_key": "sk-b"}]
+        self._write_store(auth_path, {"version": 1, "providers": {}, "credential_pool": {"anthropic": rows}},
+                    6_000_000_000)
+        reordered = identity()
+        self._write_store(auth_path, {"version": 1, "providers": {}, "credential_pool": {"anthropic": rows[::-1]}},
+                    7_000_000_000)
+        assert identity() == reordered
