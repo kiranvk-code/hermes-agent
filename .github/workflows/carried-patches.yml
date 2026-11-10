@@ -1,0 +1,42 @@
+name: Carried patches (kiranvk-code fork)
+
+# Proves the fork's carried patches on top of an upstream release tag:
+#  - tool_search always_visible pins
+#  - [provider/model] response prefix + /prefix
+#  - catalog-cache fingerprint (/model picker flicker)
+#  - Alibaba token-plan model list
+#  - github-copilot plugin (hermes-labs-plugins) test suite against this core
+on:
+  push:
+    branches: ['port/**', 'carry/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  carried:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up locked Python and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          packages: pnpm
+          extras: '["all"]'
+          test-environment: 'true'
+      - name: Carried-patch tests
+        run: |
+          scripts/run_tests.sh \
+            tests/tools/test_tool_search.py \
+            tests/hermes_cli/test_model_cache_swr.py \
+            $(ls tests/gateway/test_response_prefix*.py 2>/dev/null) \
+            $(ls tests/hermes_cli/test_models_catalog*.py 2>/dev/null)
+      - name: github-copilot plugin tests (pinned labs-plugins commit)
+        run: |
+          git clone --filter=blob:none https://github.com/NousResearch/hermes-labs-plugins.git /tmp/labs
+          git -C /tmp/labs checkout 4987918a068fcf4b3efbb584db5dd05e5f57c669
+          mkdir -p "$HOME/.hermes/plugins"
+          cp -r /tmp/labs/github-copilot "$HOME/.hermes/plugins/github-copilot"
+          scripts/run_tests.sh --files /tmp/labs/github-copilot/tests || scripts/run_tests.sh /tmp/labs/github-copilot/tests
