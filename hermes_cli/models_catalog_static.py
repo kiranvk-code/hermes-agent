@@ -216,8 +216,10 @@ _ALIBABA_CODING_PLAN_MODELS = [
 ]
 # Verified against a live Token Plan subscription (key tier ``sk-sp-...``).
 _ALIBABA_TOKEN_PLAN_MODELS = [
-    "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
-    "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
+    "deepseek-v4-flash-0731", "deepseek-v4-pro", "deepseek-v4.1-flash", "glm-5.2",
+    "glm-5.3", "qwen-audio-3.0-realtime-plus", "qwen-audio-3.0-tts-plus", "qwen3.6-flash",
+    "qwen3.7-max", "qwen3.7-plus", "qwen3.8-flash", "qwen3.8-max",
+    "wan2.7-image", "wan2.7-image-pro", "wan3.0-video",
 ]
 # Curated per-provider lists. ``-cn`` twins share the international catalog on a domestic endpoint.
 _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
