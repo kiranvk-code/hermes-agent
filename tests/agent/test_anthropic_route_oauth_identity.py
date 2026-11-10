@@ -38,6 +38,30 @@ def test_route_identity_requires_native_host_and_oauth_shape():
     assert len(calls) == 1  # the third-party route never materialised the callable
 
 
+def test_console_user_scoped_key_is_not_oauth_and_gets_no_claude_code_identity():
+    """A Console ``sk-ant-usr-*`` key authenticates with x-api-key, so it must never carry the
+    Claude Code identity. Anthropic refuses Claude-Code-tagged traffic against a subscriber
+    credit-only balance ("credit balance is too low") even when the org is fully funded, because
+    those monthly Max/Team credits do not cover Claude Code.
+    """
+    pytest.importorskip("anthropic")
+    from agent.anthropic_adapter import _OAUTH_ONLY_BETAS, build_anthropic_client
+
+    console_usr = "sk-ant-usr-NOT-A-REAL-KEY"
+    oauth_tok = "sk-ant-oat01-NOT-A-REAL-TOKEN"
+
+    # Classification: user-scoped Console keys are API keys; OAuth tokens still are OAuth.
+    assert anthropic_route_is_oauth("https://api.anthropic.com", console_usr) is False
+    assert anthropic_route_is_oauth("https://api.anthropic.com", oauth_tok) is True
+
+    # Wire shape: no claude-code betas, no claude-code user-agent, and x-api-key (not Bearer).
+    headers = build_anthropic_client(console_usr, "https://api.anthropic.com")._custom_headers
+    beta = headers.get("anthropic-beta", "")
+    assert not any(b in beta for b in _OAUTH_ONLY_BETAS)
+    assert "user-agent" not in headers and "x-app" not in headers
+    assert "X-Api-Key" not in headers  # not Omit()-ed => the key rides x-api-key
+
+
 def test_key_cmd_oauth_route_builds_claude_code_identity_on_main_and_aux_clients(monkeypatch):
     pytest.importorskip("anthropic")
     from agent.agent_init import _init_anthropic_client

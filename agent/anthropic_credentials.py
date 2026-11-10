@@ -60,9 +60,18 @@ def _first_env(*names: str) -> str:
     return next((v for v in (_getenv(n).strip() for n in names) if v), "")
 
 
+# Console API-key prefixes: these authenticate with ``x-api-key`` and must never be given the
+# Claude Code identity. ``sk-ant-usr-*`` (user-scoped keys, as minted for subscriber Console orgs)
+# used to fall through to the broad ``sk-ant-`` OAuth test below and so shipped
+# ``_OAUTH_ONLY_BETAS`` + a claude-code user-agent. Anthropic reads that as Claude Code traffic,
+# which the monthly Max/Team API credits explicitly do not cover, and rejects the request with
+# "Your credit balance is too low to access the Anthropic API" even on a fully funded org.
+_CONSOLE_KEY_PREFIXES = ("sk-ant-api", "sk-ant-usr")
+
+
 def _is_oauth_token(key: str) -> bool:
-    """True for Anthropic OAuth/setup tokens (sk-ant-*, eyJ JWTs, cc-); False for sk-ant-api* Console keys."""
-    if not key or key.startswith("sk-ant-api"):
+    """True for Anthropic OAuth/setup tokens (sk-ant-oat*, eyJ JWTs, cc-); False for Console API keys."""
+    if not key or key.startswith(_CONSOLE_KEY_PREFIXES):
         return False
     return key.startswith(("sk-ant-", "eyJ", "cc-"))
 
